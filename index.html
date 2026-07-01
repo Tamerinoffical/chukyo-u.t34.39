@@ -82,6 +82,7 @@
         <span class="key">Space<small>ジャンプ</small></span>
         <span class="key">R<small>やり直す</small></span>
         <span class="key">P<small>一時停止</small></span>
+        <span class="key">M<small>音を消す</small></span>
       </div>
       <div class="btns"><button class="game go" id="startBtn">はじめる</button></div>
     </div>
@@ -103,7 +104,7 @@
       <div class="btns"><button class="game go" id="againBtn">もう一度あそぶ</button></div>
     </div>
 
-    <div class="hint">A/← D/→ で移動・Space でジャンプ／R: やり直す／P: 一時停止</div>
+    <div class="hint">A/← D/→ で移動・Space でジャンプ／R: やり直す／P: 一時停止／M: 音を消す</div>
   </div>
 </div>
 
@@ -123,6 +124,7 @@ const GRAV = 0.85;             // 重力
 const MAX_FALL = 17;           // 落下速度上限
 const RUN = 4.6;               // 横移動速度
 const JUMP_V = -15.5;          // ジャンプ初速
+const BOSS_JUMP = -19 * 1.5;   // ボスのジャンプ（通常の1.5倍）
 const PW = 30, PH = 42;        // プレイヤーサイズ
 const SHADOW_DELAY = 78;       // 影が遅れて追ってくるフレーム数(約1.3秒)
 const FALL_DEATH_Y = 620;      // これより下に落ちたら死亡(落とし穴)
@@ -148,6 +150,8 @@ const LEVEL = {
   platforms: [
     {x:900,  y:360, w:90, h:24},   // 段差
     {x:2250, y:368, w:110,h:24},   // 穴渡りの飛び石
+    {x:2470, y:352, w:150,h:24},   // ハンマーブロス：下段
+    {x:2560, y:244, w:150,h:24},   // ハンマーブロス：上段
     {x:3680, y:362, w:120,h:24},   // 穴渡りの飛び石
     {x:4350, y:330, w:120,h:24},
     {x:4540, y:250, w:120,h:24},   // 階段状
@@ -172,7 +176,7 @@ function buildSolids(){
 
 /* =========================================================================
    敵の初期配置テンプレート（リセット時に毎回ここから複製）
-   type: goomba(歩く) / para(飛ぶ) / piranha(土管) / thwomp(降る) / boss
+   type: goomba(歩く) / para(飛ぶ) / piranha(土管) / hammer(ハンマー) / thwomp(降る) / boss(ウサギ)
    ========================================================================= */
 function enemyTemplates(){
   return [
@@ -191,13 +195,19 @@ function enemyTemplates(){
     {type:'piranha', pipe:0, x:1520+37, w:30, h:46, t:0,   state:'hidden', timer:60},
     {type:'piranha', pipe:1, x:3260+37, w:30, h:46, t:1.2, state:'hidden', timer:90},
 
+    // ハンマーブロス：二段足場に1体ずつ。ハンマー3連投→ジャンプ移動→…をループ
+    {type:'hammer', x:2510, y:314, w:34, h:38, standY:314, minX:2470, maxX:2586,
+     vy:0, dir:1,  phase:'throw', timer:35, shots:0, face:-1},
+    {type:'hammer', x:2600, y:206, w:34, h:38, standY:206, minX:2560, maxX:2676,
+     vy:0, dir:-1, phase:'wait', timer:150, shots:0, face:-1},
+
     // ドッスン：見えていて、真下を通ると降ってくる
     {type:'thwomp', x:2980, y:130, w:74, h:74, homeY:130, vy:0, state:'idle', wait:0},
     {type:'thwomp', x:3480, y:110, w:74, h:74, homeY:110, vy:0, state:'idle', wait:0},
 
-    // クッパ：ゴール直前。高く飛び跳ね、黒い球を投げる。踏んでも倒せない
+    // 大ウサギ（ボス）：ゴール直前。うんこ3連発×2セット→大ジャンプ。踏んでも倒せない
     {type:'boss', x:5860, y:GROUND_TOP-92, w:92, h:92, vy:0, onGround:true,
-     jumpTimer:70, shootTimer:90, homeX:5860, dir:-1},
+     phase:'shoot', timer:40, shots:0, bursts:0, homeX:5860, dir:-1},
   ];
 }
 
@@ -208,15 +218,15 @@ const STATE = {TITLE:'title', PLAY:'play', CLEAR:'clear', END:'end'};
 let state = STATE.TITLE;
 let paused = false;
 
-let player, camX, enemies, balls, deaths, pathBuf, shadow, deathFlash, frame;
+let player, camX, enemies, balls, deaths, pathBuf, shadow, deathFlash, frame, score;
 
 function resetRun(){
-  // スタート地点に戻る（死亡時もこれを使う）。死亡地点マーカーは保持。
+  // スタート地点に戻る（死亡時もこれを使う）。死亡地点マーカー・スコアは保持。
   player = {x:LEVEL.startX, y:GROUND_TOP-PH, w:PW, h:PH, vx:0, vy:0,
             onGround:false, face:1, anim:0, invuln:0};
   camX = 0;
   enemies = enemyTemplates();
-  balls = [];           // ボスの黒い球
+  balls = [];           // 飛び道具（うんこ・ハンマー）
   pathBuf = [];         // プレイヤーの軌跡（影が再生する）
   shadow = {x:LEVEL.startX, y:GROUND_TOP-PH, w:PW, h:PH, active:false};
   deathFlash = 0;
@@ -224,6 +234,7 @@ function resetRun(){
 function fullReset(){
   buildSolids();
   deaths = [];          // 死亡地点（常時表示）
+  score = 0;            // スコア（1ゲーム通して加算・減算）
   frame = 0;
   resetRun();
 }
@@ -242,6 +253,7 @@ addEventListener('keydown', e=>{
   if(k===' '||k==='spacebar'||k==='arrowup'){ if(!e.repeat) jumpQueued=true; }
   if(k==='r'){ if(state===STATE.PLAY) resetRun(); }
   if(k==='p'){ if(state===STATE.PLAY) paused=!paused; }
+  if(k==='m'){ BGM.on=!BGM.on; }
 });
 addEventListener('keyup', e=>{
   const k = e.key.toLowerCase();
@@ -328,13 +340,15 @@ function update(){
     if(e.type==='goomba') updateGoomba(e);
     else if(e.type==='para') updatePara(e);
     else if(e.type==='piranha') updatePiranha(e);
+    else if(e.type==='hammer') updateHammer(e);
     else if(e.type==='thwomp') updateThwomp(e);
     else if(e.type==='boss') updateBoss(e);
   }
-  /* --- 黒い球 --- */
+  /* --- 飛び道具（うんこ・ハンマー） --- */
   for(const b of balls){
     b.vy = Math.min(b.vy+0.45, 14);
     b.x += b.vx; b.y += b.vy;
+    b.spin = (b.spin||0) + 0.35;
     if(b.y>GROUND_TOP-b.h && pointSolid(b.x+b.w/2, b.y+b.h)) b.dead=true;
     if(b.x<-50||b.x>LEVEL.width+50||b.y>H+60) b.dead=true;
     if(player.invuln<=0 && aabb(player,b)){ killPlayer(); return; }
@@ -410,30 +424,70 @@ function updateThwomp(e){
   // 接触で死亡（落下/着地中が危険）。上から踏めば倒せる
   if(player.invuln<=0 && aabb(player,e)){
     const stomp = player.vy>0 && (player.y+player.h) < e.y + e.h*0.5;
-    if(stomp && e.state!=='fall'){ e.dead=true; player.vy=JUMP_V*0.62; }
+    if(stomp && e.state!=='fall'){ e.dead=true; score+=1000; player.vy=JUMP_V*0.62; }
     else killPlayer();
   }
 }
 
 /* クッパ（ボス） */
+/* ハンマーブロス：ハンマー3連投 → 小ジャンプして少し移動 → くり返し */
+function updateHammer(e){
+  // 重力＋自分の足場に着地
+  e.vy = Math.min(e.vy+GRAV, MAX_FALL); e.y += e.vy;
+  let landed=false;
+  if(e.y >= e.standY){ if(e.vy>0) landed=true; e.y=e.standY; e.vy=0; e.onG=true; }
+  else e.onG=false;
+  e.face = (player.x+player.w/2 < e.x+e.w/2) ? -1 : 1;
+
+  if(e.phase==='throw'){
+    if(--e.timer<=0){
+      // ハンマーを1本投げる（山なりにプレイヤー方向へ）
+      balls.push({kind:'hammer', x:e.x+e.w/2-8, y:e.y-6, w:16, h:16,
+                  vx:e.face*(2.3+Math.random()*0.9), vy:-9.5, spin:0});
+      e.shots++;
+      if(e.shots>=3){ e.shots=0; e.phase='jump'; e.vy=-8.5;   // 3連投したらジャンプ
+                      e.dir=(Math.random()<0.5?-1:1); }
+      else e.timer=38;                                        // 連投の間隔（広め）
+    }
+  } else if(e.phase==='jump'){ // 空中で少し移動し、着地したらクールダウンへ
+    if(!e.onG) e.x = Math.max(e.minX, Math.min(e.maxX, e.x + e.dir*1.8));
+    if(landed){ e.phase='wait'; e.timer=130; }               // 次の3連投までしっかり待つ
+  } else { // wait：休止
+    if(--e.timer<=0){ e.phase='throw'; e.timer=20; }
+  }
+  handleStompOrHit(e, true);   // 踏めば倒せる
+}
+
+/* 大ウサギ（ボス）：うんこ3連発を2セット → 大ジャンプ1回（踏んでも倒せない） */
 function updateBoss(e){
   // 重力＋地面
-  e.vy = Math.min(e.vy+0.8, 18); e.y += e.vy;
+  e.vy = Math.min(e.vy+0.8, 20); e.y += e.vy;
   const g = pointSolid(e.x+e.w/2, e.y+e.h+1);
-  if(g && e.vy>=0){ e.y=g.y-e.h; e.vy=0; e.onGround=true; } else e.onGround=false;
+  let landed=false;
+  if(g && e.vy>=0){ if(e.vy>0) landed=true; e.y=g.y-e.h; e.vy=0; e.onGround=true; }
+  else e.onGround=false;
   // 左右に少し揺れる
   e.x += 0.6*e.dir;
   if(e.x<e.homeX-70){e.dir=1;} if(e.x>e.homeX+70){e.dir=-1;}
-  // 高くジャンプ（この間、真下を通り抜けられる）
-  if(e.onGround){ if(--e.jumpTimer<=0){ e.vy=-19; e.jumpTimer=90; } }
-  // 黒い球を投げる
-  if(--e.shootTimer<=0){
-    e.shootTimer = 95;
-    const dx = (player.x - e.x);
-    const dir = dx>=0?1:-1;
-    balls.push({x:e.x+e.w/2-9, y:e.y+20, w:18, h:18,
-                vx:dir*(3+Math.random()*1.5), vy:-7});
+
+  if(e.phase==='shoot'){
+    if(e.onGround && --e.timer<=0){
+      const dir = (player.x < e.x) ? -1 : 1;
+      balls.push({kind:'poop', x:e.x+e.w/2-11, y:e.y+34, w:22, h:20,
+                  vx:dir*(3+Math.random()*1.5), vy:-7, spin:0});
+      e.shots++;
+      if(e.shots>=3){                 // 1セット(3連発)おわり
+        e.shots=0; e.bursts++;
+        if(e.bursts>=2){ e.bursts=0; e.phase='jump'; e.timer=22; } // 2セット撃ったら
+        else e.timer=40;              // 次のセットまで少し溜める
+      } else e.timer=11;              // 連発の間隔
+    }
+  } else if(e.phase==='jump'){
+    if(e.onGround && --e.timer<=0){ e.vy=BOSS_JUMP; e.phase='air'; } // 大ジャンプ
+  } else { // air：着地したら攻撃に戻る（この間に真下を通り抜ける）
+    if(landed){ e.phase='shoot'; e.timer=30; }
   }
+
   // 接触＝死亡（踏んでも倒せない）
   if(player.invuln<=0 && aabb(player,e)) killPlayer();
 }
@@ -444,23 +498,26 @@ function handleStompOrHit(e, stompable){
   const stomp = player.vy>0 && (player.y+player.h) < e.y + e.h*0.55;
   if(stompable && stomp){
     e.dead = true;
+    score += (e.type==='hammer') ? 1500 : 1000;   // 撃破スコア
     player.vy = JUMP_V*0.62;       // 踏んだら小さく跳ねる
   }else{
     killPlayer();
   }
 }
 
-/* 死亡処理：地点を記録してスタートへ */
+/* 死亡処理：地点を記録・スコア-5000してスタートへ */
 function killPlayer(){
   deaths.push({x:player.x+player.w/2, y:player.y+player.h});
+  score -= 5000;
   deathFlash = 36;
   player.invuln = 1;
 }
 
 function goalReached(){
   state = STATE.CLEAR;
+  stopBGM();
   document.getElementById('clearStats').textContent =
-    `死亡回数：${deaths.length}回`;
+    `スコア：${score}　／　死亡回数：${deaths.length}回`;
   show('clearScreen');
 }
 
@@ -468,9 +525,9 @@ function goalReached(){
    描画
    ========================================================================= */
 function draw(){
-  // 空
+  // 夜空
   const sky = ctx.createLinearGradient(0,0,0,H);
-  sky.addColorStop(0,'#7ec8f0'); sky.addColorStop(1,'#cdeefb');
+  sky.addColorStop(0,'#0b0716'); sky.addColorStop(0.55,'#1a1030'); sky.addColorStop(1,'#2a1b3f');
   ctx.fillStyle=sky; ctx.fillRect(0,0,W,H);
 
   drawParallax();
@@ -503,44 +560,67 @@ function draw(){
   }
 }
 
+// 星（一度だけ生成。決め打ちの疑似乱数で毎回同じ配置）
+const STARS = (()=>{ let s=9871, r=()=>((s=(s*1103515245+12345)&0x7fffffff)/0x7fffffff);
+  const a=[]; for(let i=0;i<70;i++) a.push({x:r()*W, y:r()*(GROUND_TOP-40), r:0.6+r()*1.6, ph:r()*6.28});
+  return a; })();
+
 function drawParallax(){
-  // 遠くの丘（ゆっくりスクロール）
-  ctx.fillStyle='#9fd9a6';
+  // 月（画面右上・淡い光）
+  const mx=W-150, my=96;
+  const halo=ctx.createRadialGradient(mx,my,10,mx,my,90);
+  halo.addColorStop(0,'rgba(200,190,240,.35)'); halo.addColorStop(1,'rgba(200,190,240,0)');
+  ctx.fillStyle=halo; ctx.beginPath(); ctx.arc(mx,my,90,0,7); ctx.fill();
+  ctx.fillStyle='#d6cfec'; ctx.beginPath(); ctx.arc(mx,my,42,0,7); ctx.fill();
+  ctx.fillStyle='#c3badf'; ctx.beginPath(); ctx.arc(mx-12,my-8,8,0,7);
+  ctx.arc(mx+14,my+10,6,0,7); ctx.arc(mx+4,my-16,4,0,7); ctx.fill();
+
+  // 星（横スクロールでゆっくり流れる＋またたき）
+  for(const st of STARS){
+    let sx=(st.x - camX*0.12) % W; if(sx<0) sx+=W;
+    const tw=0.4+0.6*Math.abs(Math.sin(frame*0.03+st.ph));
+    ctx.fillStyle=`rgba(226,220,255,${tw})`;
+    ctx.beginPath(); ctx.arc(sx,st.y,st.r,0,7); ctx.fill();
+  }
+
+  // 遠くの丘（2層のシルエット）
+  ctx.fillStyle='#181026';
   for(let i=0;i<8;i++){
-    const hx = i*520 - (camX*0.3)%520 - 260;
-    ctx.beginPath(); ctx.arc(hx,GROUND_TOP+30,180,Math.PI,0); ctx.fill();
+    const hx=i*520 - (camX*0.25)%520 - 260;
+    ctx.beginPath(); ctx.arc(hx,GROUND_TOP+60,210,Math.PI,0); ctx.fill();
   }
-  // 雲
-  ctx.fillStyle='rgba(255,255,255,.85)';
-  for(let i=0;i<6;i++){
-    const cxp = i*430 - (camX*0.5)%430;
-    cloud(cxp+60, 70+ (i%2)*46);
+  ctx.fillStyle='#241634';
+  for(let i=0;i<9;i++){
+    const hx=i*430 - (camX*0.42)%430 - 200;
+    ctx.beginPath(); ctx.arc(hx,GROUND_TOP+40,150,Math.PI,0); ctx.fill();
   }
-}
-function cloud(x,y){
-  ctx.beginPath();
-  ctx.arc(x,y,22,0,7); ctx.arc(x+24,y-8,26,0,7);
-  ctx.arc(x+52,y,22,0,7); ctx.rect(x-2,y,56,22); ctx.fill();
+  // 漂う霧
+  ctx.fillStyle='rgba(60,40,90,.18)';
+  for(let i=0;i<5;i++){
+    const fx=i*380 - (camX*0.6)%380 + Math.sin(frame*0.01+i)*20;
+    ctx.beginPath(); ctx.ellipse(fx,GROUND_TOP-30,120,26,0,0,7); ctx.fill();
+  }
 }
 
 function drawGround(){
   for(const s of LEVEL.segments){
     // 土
-    ctx.fillStyle='#9c6b3f'; ctx.fillRect(s.x,GROUND_TOP,s.w,H-GROUND_TOP+40);
-    // 草
-    ctx.fillStyle='#5fb04b'; ctx.fillRect(s.x,GROUND_TOP,s.w,16);
-    ctx.fillStyle='#4c9a3c';
+    ctx.fillStyle='#241a34'; ctx.fillRect(s.x,GROUND_TOP,s.w,H-GROUND_TOP+40);
+    // 表土
+    ctx.fillStyle='#3a2c52'; ctx.fillRect(s.x,GROUND_TOP,s.w,16);
+    ctx.fillStyle='#4a3a6b';
     for(let x=s.x;x<s.x+s.w;x+=16) ctx.fillRect(x,GROUND_TOP+12,8,5);
-    // 縁
-    ctx.fillStyle='rgba(0,0,0,.12)';
-    ctx.fillRect(s.x,GROUND_TOP+16,s.w,3);
+    // 縁の微光
+    ctx.fillStyle='rgba(124,92,255,.4)';
+    ctx.fillRect(s.x,GROUND_TOP,s.w,2);
   }
 }
 function drawPlatforms(){
   for(const p of LEVEL.platforms){
-    ctx.fillStyle='#caa15a'; ctx.fillRect(p.x,p.y,p.w,p.h);
-    ctx.fillStyle='#a07a36'; ctx.fillRect(p.x,p.y+p.h-5,p.w,5);
-    ctx.strokeStyle='rgba(0,0,0,.25)'; ctx.lineWidth=2;
+    ctx.fillStyle='#3a3050'; ctx.fillRect(p.x,p.y,p.w,p.h);
+    ctx.fillStyle='#2a2140'; ctx.fillRect(p.x,p.y+p.h-5,p.w,5);
+    ctx.fillStyle='rgba(124,92,255,.35)'; ctx.fillRect(p.x,p.y,p.w,2);
+    ctx.strokeStyle='rgba(0,0,0,.4)'; ctx.lineWidth=2;
     ctx.strokeRect(p.x+1,p.y+1,p.w-2,p.h-2);
   }
 }
@@ -577,6 +657,7 @@ function drawEnemy(e){
   if(e.type==='goomba') drawGoomba(e);
   else if(e.type==='para') drawPara(e);
   else if(e.type==='piranha') drawPiranha(e);
+  else if(e.type==='hammer') drawHammer(e);
   else if(e.type==='thwomp') drawThwomp(e);
   else if(e.type==='boss') drawBoss(e);
 }
@@ -627,26 +708,64 @@ function drawThwomp(e){
   ctx.fillStyle='#1a1a28'; ctx.fillRect(e.x+22,e.y+28,7,7); ctx.fillRect(e.x+e.w-29,e.y+28,7,7);
   ctx.fillRect(e.x+24,e.y+46,e.w-48,5);
 }
-function drawBoss(e){
-  // 体
-  ctx.fillStyle='#2fa35a'; ctx.fillRect(e.x,e.y+18,e.w,e.h-18);
-  ctx.fillStyle='#f2c14b'; ctx.fillRect(e.x+10,e.y+e.h-26,e.w-20,20); // 腹
-  // 頭
-  ctx.fillStyle='#3fb56a'; ctx.fillRect(e.x+12,e.y,e.w-24,30);
-  // 角
-  ctx.fillStyle='#f2ead0';
-  ctx.beginPath(); ctx.moveTo(e.x+12,e.y+4); ctx.lineTo(e.x+2,e.y-12); ctx.lineTo(e.x+22,e.y+4); ctx.fill();
-  ctx.beginPath(); ctx.moveTo(e.x+e.w-12,e.y+4); ctx.lineTo(e.x+e.w-2,e.y-12); ctx.lineTo(e.x+e.w-22,e.y+4); ctx.fill();
-  // 目
-  ctx.fillStyle='#fff'; ctx.fillRect(e.x+24,e.y+8,14,12); ctx.fillRect(e.x+e.w-38,e.y+8,14,12);
-  ctx.fillStyle='#c0202a'; ctx.fillRect(e.x+30,e.y+11,6,7); ctx.fillRect(e.x+e.w-34,e.y+11,6,7);
-  // とげ甲羅
-  ctx.fillStyle='#f2ead0';
-  for(let i=0;i<3;i++){
-    ctx.beginPath();
-    ctx.moveTo(e.x+18+i*26,e.y+18); ctx.lineTo(e.x+30+i*26,e.y+18);
-    ctx.lineTo(e.x+24+i*26,e.y+4); ctx.fill();
+function drawHammer(e){
+  const x=e.x, y=e.y, f=e.face;
+  // 体（緑の甲羅っぽい兵士）
+  ctx.fillStyle='#3f9d52'; ctx.fillRect(x+4,y+14,e.w-8,e.h-14);
+  ctx.fillStyle='#2f7d40'; ctx.fillRect(x+4,y+e.h-6,e.w-8,6);
+  // ヘルメット
+  ctx.fillStyle='#2f7d40'; ctx.fillRect(x+3,y+2,e.w-6,12);
+  ctx.fillStyle='#ffd8a8'; ctx.fillRect(x+7,y+9,e.w-14,8);   // 顔
+  ctx.fillStyle='#1a1a28';                                    // 目
+  ctx.fillRect(x+(f>0?e.w-13:8), y+11, 4,4);
+  // 振り上げたハンマー（投げ動作中だけ）
+  if(e.phase==='throw'){
+    const hx = x + (f>0? e.w-2 : -10);
+    ctx.fillStyle='#8a6b3a'; ctx.fillRect(hx, y-12, 4, 16);   // 柄
+    ctx.fillStyle='#9aa0b5'; ctx.fillRect(hx-6, y-18, 16, 9); // 頭
   }
+}
+
+/* 大ウサギ（ボス） */
+function drawBoss(e){
+  const x=e.x, y=e.y, w=e.w, h=e.h, f=e.dir;
+  const cx=x+w/2;
+  // 耳（長い）
+  const earSway=Math.sin(frame*0.08)*4;
+  ctx.fillStyle='#d9d2e6';
+  for(const s of [-1,1]){
+    ctx.beginPath();
+    ctx.ellipse(cx+s*16+ (s>0?earSway:-earSway), y-12, 11, 30, s*0.12, 0, 7); ctx.fill();
+  }
+  ctx.fillStyle='#f3a9c4';                       // 耳の内側
+  for(const s of [-1,1]){
+    ctx.beginPath();
+    ctx.ellipse(cx+s*16+ (s>0?earSway:-earSway), y-10, 5, 20, s*0.12, 0, 7); ctx.fill();
+  }
+  // 体（ふっくら）
+  ctx.fillStyle='#e7e1f0';
+  ctx.beginPath(); ctx.ellipse(cx, y+h*0.6, w*0.5, h*0.42, 0, 0, 7); ctx.fill();
+  // 頭
+  ctx.fillStyle='#efeaf6';
+  ctx.beginPath(); ctx.ellipse(cx, y+22, w*0.42, h*0.3, 0, 0, 7); ctx.fill();
+  // ほっぺ
+  ctx.fillStyle='#f6c9d8';
+  ctx.beginPath(); ctx.arc(cx-22,y+30,7,0,7); ctx.arc(cx+22,y+30,7,0,7); ctx.fill();
+  // 赤い目（凶悪）
+  ctx.fillStyle='#fff'; ctx.beginPath();
+  ctx.arc(cx-15,y+20,8,0,7); ctx.arc(cx+15,y+20,8,0,7); ctx.fill();
+  ctx.fillStyle='#d11f2e'; ctx.beginPath();
+  ctx.arc(cx-15+f*2,y+21,4.5,0,7); ctx.arc(cx+15+f*2,y+21,4.5,0,7); ctx.fill();
+  // 怒り眉
+  ctx.strokeStyle='#6b5e7d'; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.moveTo(cx-24,y+10); ctx.lineTo(cx-7,y+16);
+                   ctx.moveTo(cx+24,y+10); ctx.lineTo(cx+7,y+16); ctx.stroke();
+  // 鼻と歯
+  ctx.fillStyle='#f3a9c4'; ctx.beginPath(); ctx.arc(cx,y+30,3.5,0,7); ctx.fill();
+  ctx.fillStyle='#fff'; ctx.fillRect(cx-6,y+33,5,8); ctx.fillRect(cx+1,y+33,5,8);
+  // 足
+  ctx.fillStyle='#d9d2e6';
+  ctx.beginPath(); ctx.ellipse(cx-22,y+h-6,14,9,0,0,7); ctx.ellipse(cx+22,y+h-6,14,9,0,0,7); ctx.fill();
 }
 function drawGoal(){
   const gx = LEVEL.goalX;
@@ -665,10 +784,30 @@ function drawGoal(){
   ctx.fillStyle='#caa15a'; ctx.fillRect(gx-26, GROUND_TOP-24, 52, 24);
 }
 function drawBall(b){
-  ctx.fillStyle='#15121d';
+  if(b.kind==='hammer'){            // 回転するハンマー
+    ctx.save();
+    ctx.translate(b.x+b.w/2, b.y+b.h/2); ctx.rotate(b.spin||0);
+    ctx.fillStyle='#8a6b3a'; ctx.fillRect(-2,-2,4,12);   // 柄
+    ctx.fillStyle='#9aa0b5'; ctx.fillRect(-8,-9,16,8);   // 頭
+    ctx.fillStyle='#c4c9d8'; ctx.fillRect(-8,-9,16,3);
+    ctx.restore();
+    return;
+  }
+  if(b.kind==='poop'){              // うんこ
+    const cx=b.x+b.w/2, by=b.y+b.h;
+    ctx.fillStyle='#6e4a26';
+    ctx.beginPath(); ctx.ellipse(cx,by-4,b.w/2,6,0,0,7); ctx.fill();      // 下段
+    ctx.fillStyle='#7d5630';
+    ctx.beginPath(); ctx.ellipse(cx,by-11,b.w*0.34,5,0,0,7); ctx.fill();  // 中段
+    ctx.beginPath(); ctx.ellipse(cx,by-17,b.w*0.18,4,0,0,7); ctx.fill();  // 上段
+    ctx.fillStyle='#fff';                                                 // 目
+    ctx.beginPath(); ctx.arc(cx-4,by-7,2.4,0,7); ctx.arc(cx+4,by-7,2.4,0,7); ctx.fill();
+    ctx.fillStyle='#1a1a28';
+    ctx.beginPath(); ctx.arc(cx-4,by-7,1.1,0,7); ctx.arc(cx+4,by-7,1.1,0,7); ctx.fill();
+    return;
+  }
+  ctx.fillStyle='#15121d';          // 既定（黒い球）
   ctx.beginPath(); ctx.arc(b.x+b.w/2,b.y+b.h/2,b.w/2,0,7); ctx.fill();
-  ctx.fillStyle='rgba(255,90,120,.6)';
-  ctx.beginPath(); ctx.arc(b.x+b.w/2-3,b.y+b.h/2-3,3,0,7); ctx.fill();
 }
 
 function drawPlayer(){
@@ -714,16 +853,87 @@ function drawShadow(){
 }
 
 function drawHUD(){
-  ctx.fillStyle='rgba(20,16,30,.55)'; ctx.fillRect(12,12,206,40);
-  ctx.fillStyle='#f3ead9'; ctx.font='16px DotGothic16,monospace'; ctx.textAlign='left';
-  ctx.fillText(`死亡  ${deaths.length}`, 24, 38);
-  // 進捗バー
+  // 左上：上からスコア → 死亡数
+  ctx.fillStyle='rgba(20,16,30,.6)'; ctx.fillRect(12,12,232,64);
+  ctx.strokeStyle='rgba(124,92,255,.5)'; ctx.lineWidth=2; ctx.strokeRect(12,12,232,64);
+  ctx.textAlign='left';
+  ctx.fillStyle='#9b8fb5'; ctx.font='11px DotGothic16,monospace';
+  ctx.fillText('SCORE', 24, 30);
+  ctx.fillStyle= score<0 ? '#ff7089' : '#5bd6a0';
+  ctx.font='22px DotGothic16,monospace';
+  ctx.fillText(String(score), 92, 34);
+  ctx.fillStyle='#9b8fb5'; ctx.font='11px DotGothic16,monospace';
+  ctx.fillText('DEATHS', 24, 58);
+  ctx.fillStyle='#f3ead9'; ctx.font='18px DotGothic16,monospace';
+  ctx.fillText(String(deaths.length), 92, 62);
+
+  // 右上：進捗バー
   const prog = Math.max(0,Math.min(1,(player.x-LEVEL.startX)/(LEVEL.goalX-LEVEL.startX)));
-  ctx.fillStyle='rgba(20,16,30,.55)'; ctx.fillRect(W-262,16,250,16);
-  ctx.fillStyle='#5bd6a0'; ctx.fillRect(W-260,18,246*prog,12);
+  ctx.fillStyle='rgba(20,16,30,.6)'; ctx.fillRect(W-262,16,250,16);
+  ctx.fillStyle='#7c5cff'; ctx.fillRect(W-260,18,246*prog,12);
   ctx.fillStyle='#f3ead9'; ctx.font='11px DotGothic16,monospace';
   ctx.fillText('START',W-262,46); ctx.textAlign='right';
   ctx.fillText('GOAL',W-12,46); ctx.textAlign='left';
+}
+
+/* =========================================================================
+   BGM：Web Audioで合成するレトロ風ダークループ（外部ファイル不要）
+   Aマイナーの暗い16ステップを繰り返す。操作(ボタン)で開始＝自動再生制限に準拠。
+   ========================================================================= */
+const BGM = { ctx:null, master:null, on:true, timer:null, step:0, next:0 };
+const STEP_DUR = 0.17;
+const BASS = [110,0,0,110, 82.41,0,82.41,0, 98,0,0,98, 87.31,0,110,0];
+const LEAD = [440,0,523.25,0, 659.25,0,523.25,0, 587.33,0,659.25,0, 523.25,0,493.88,0];
+
+function initAudio(){
+  if(BGM.ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if(!AC) return;
+  BGM.ctx = new AC();
+  BGM.master = BGM.ctx.createGain();
+  BGM.master.gain.value = 0;
+  BGM.master.connect(BGM.ctx.destination);
+}
+function bgmTone(freq,t,dur,type,vol){
+  if(!freq) return;
+  const c=BGM.ctx, o=c.createOscillator(), g=c.createGain();
+  o.type=type; o.frequency.setValueAtTime(freq,t);
+  g.gain.setValueAtTime(0.0001,t);
+  g.gain.linearRampToValueAtTime(vol,t+0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  o.connect(g); g.connect(BGM.master);
+  o.start(t); o.stop(t+dur+0.03);
+}
+function bgmKick(t){
+  const c=BGM.ctx, o=c.createOscillator(), g=c.createGain();
+  o.type='sine';
+  o.frequency.setValueAtTime(130,t); o.frequency.exponentialRampToValueAtTime(45,t+0.12);
+  g.gain.setValueAtTime(0.45,t); g.gain.exponentialRampToValueAtTime(0.0001,t+0.16);
+  o.connect(g); g.connect(BGM.master); o.start(t); o.stop(t+0.18);
+}
+function bgmStep(i,t){
+  bgmTone(BASS[i], t, 0.24, 'square',   0.22);
+  bgmTone(LEAD[i], t, 0.16, 'triangle', 0.12);
+  if(i%4===0) bgmKick(t);
+}
+function bgmScheduler(){
+  const c=BGM.ctx; if(!c) return;
+  const playing = (state===STATE.PLAY && !paused && BGM.on);
+  BGM.master.gain.setTargetAtTime(playing?0.16:0, c.currentTime, 0.05);
+  while(BGM.next < c.currentTime + 0.12){
+    if(playing) bgmStep(BGM.step, BGM.next);
+    BGM.next += STEP_DUR;
+    BGM.step = (BGM.step+1) % 16;
+  }
+}
+function startBGM(){
+  initAudio(); if(!BGM.ctx) return;
+  if(BGM.ctx.state==='suspended') BGM.ctx.resume();
+  BGM.step=0; BGM.next=BGM.ctx.currentTime+0.1;
+  if(!BGM.timer) BGM.timer=setInterval(bgmScheduler,25);
+}
+function stopBGM(){
+  if(BGM.ctx && BGM.master) BGM.master.gain.setTargetAtTime(0, BGM.ctx.currentTime, 0.05);
 }
 
 /* =========================================================================
@@ -739,7 +949,7 @@ function show(id){
   for(const el of document.querySelectorAll('.overlay')) el.classList.remove('show');
   if(id) document.getElementById(id).classList.add('show');
 }
-function startGame(){ fullReset(); state=STATE.PLAY; paused=false; show(null); }
+function startGame(){ fullReset(); state=STATE.PLAY; paused=false; show(null); startBGM(); }
 
 document.getElementById('startBtn').onclick   = startGame;
 document.getElementById('restartBtn').onclick = startGame;
