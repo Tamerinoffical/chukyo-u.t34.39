@@ -2,7 +2,8 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
 <title>SHADOW RUNNER</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -28,10 +29,33 @@
   /* キャンバスは内部960x540、アスペクト維持で拡大 */
   #stage{position:relative;width:min(100vw,177.78vh);aspect-ratio:16/9;
     box-shadow:0 0 0 4px var(--ink),0 18px 50px rgba(0,0,0,.6);}
-  canvas{display:block;width:100%;height:100%;image-rendering:pixelated;}
+  canvas{display:block;width:100%;height:100%;image-rendering:pixelated;touch-action:none;}
+
+  /* ---- タッチ操作UI（スマホ/タブレット） ---- */
+  #touchControls{position:absolute;inset:0;display:none;pointer-events:none;z-index:5;}
+  #stage.touch-mode #touchControls{display:block;}
+  #stage.touch-mode .hint{display:none;}   /* PC向けの説明はタッチ時は隠す */
+  .tbtn{position:absolute;pointer-events:auto;touch-action:none;user-select:none;
+    -webkit-user-select:none;-webkit-touch-callout:none;
+    display:flex;align-items:center;justify-content:center;
+    background:rgba(124,92,255,.16);border:2px solid rgba(215,205,245,.55);
+    color:rgba(240,236,255,.85);border-radius:50%;
+    box-shadow:0 3px 14px rgba(0,0,0,.35), inset 0 0 18px rgba(124,92,255,.25);
+    backdrop-filter:blur(2px);transition:transform .05s, background .05s;}
+  .tbtn.active{background:rgba(124,92,255,.42);transform:scale(.94);
+    box-shadow:0 0 18px rgba(124,92,255,.8), inset 0 0 22px rgba(124,92,255,.5);}
+  #dpad{position:absolute;left:3%;bottom:6%;display:flex;gap:16px;}
+  #btnLeft,#btnRight{position:relative;width:clamp(54px,13vmin,94px);height:clamp(54px,13vmin,94px);
+    font-size:clamp(24px,6vmin,42px);}
+  #btnJump{right:4%;bottom:6%;width:clamp(66px,17vmin,120px);height:clamp(66px,17vmin,120px);
+    font-size:clamp(22px,5.4vmin,40px);flex-direction:column;line-height:1;}
+  #btnJump small{font-size:clamp(9px,2.2vmin,14px);letter-spacing:.1em;margin-top:2px;opacity:.8;}
+  #btnPause{left:2.5%;top:4%;width:clamp(40px,9vmin,58px);height:clamp(40px,9vmin,58px);gap:5px;}
+  #btnPause i{display:block;width:clamp(4px,1vmin,6px);height:44%;border-radius:2px;
+    background:rgba(240,236,255,.85);}
 
   /* ---- HUDとオーバーレイ ---- */
-  .overlay{position:absolute;inset:0;display:none;flex-direction:column;
+  .overlay{position:absolute;inset:0;display:none;flex-direction:column;z-index:10;
     align-items:center;justify-content:center;text-align:center;gap:22px;
     background:radial-gradient(120% 120% at 50% 30%,rgba(29,23,38,.82),rgba(13,10,19,.96));
     padding:24px;}
@@ -87,6 +111,16 @@
   <div id="stage">
     <canvas id="cv" width="960" height="540"></canvas>
 
+    <!-- タッチ操作UI（横持ち・ゲーム画面に重ねる） -->
+    <div id="touchControls">
+      <button class="tbtn" id="btnPause" aria-label="一時停止"><i></i><i></i></button>
+      <div id="dpad">
+        <button class="tbtn" id="btnLeft"  aria-label="左へ">◀</button>
+        <button class="tbtn" id="btnRight" aria-label="右へ">▶</button>
+      </div>
+      <button class="tbtn" id="btnJump" aria-label="ジャンプ">▲<small>JUMP</small></button>
+    </div>
+
     <!-- タイトル -->
     <div id="titleScreen" class="overlay show">
       <div class="title">SHADOW <b>RUNNER</b></div>
@@ -131,6 +165,11 @@
         <div class="slider-row">
           <label>効果音 <b id="sfxVal">55%</b></label>
           <input type="range" id="sfxSlider" min="0" max="100" value="55">
+        </div>
+        <div class="slider-row">
+          <label>タッチ操作ボタン <b id="touchState">OFF</b></label>
+          <button class="game ghost" id="touchToggle"
+            style="padding:9px 16px;font-size:14px;box-shadow:0 4px 0 #221a30">表示を切り替え</button>
         </div>
       </div>
       <div class="btns"><button class="game go" id="resumeBtn">再開（P）</button></div>
@@ -276,12 +315,15 @@ function fullReset(){
    ========================================================================= */
 const keys = {left:false, right:false};
 let jumpQueued = false;
+let touchUI = false;          // タッチ操作ボタンを表示中か
 const blockKeys = new Set([' ','arrowleft','arrowright','arrowup','arrowdown','spacebar']);
+const GAME_KEYS = new Set([' ','spacebar','arrowup','arrowleft','arrowright','a','d']);
 addEventListener('keydown', e=>{
   // スライダー等の入力フォーカス中はゲーム操作を横取りしない
   if(e.target && e.target.tagName==='INPUT') return;
   const k = e.key.toLowerCase();
   if(blockKeys.has(k)) e.preventDefault();
+  if(GAME_KEYS.has(k) && touchUI) setTouchUI(false);   // キーを使ったらPCモードへ
   if(k==='a'||k==='arrowleft')  keys.left=true;
   if(k==='d'||k==='arrowright') keys.right=true;
   if(k===' '||k==='spacebar'||k==='arrowup'){ if(!e.repeat) jumpQueued=true; }
@@ -884,19 +926,20 @@ function drawShadow(){
 }
 
 function drawHUD(){
-  // 左上：上からスコア → 死亡数
-  ctx.fillStyle='rgba(20,16,30,.6)'; ctx.fillRect(12,12,232,64);
-  ctx.strokeStyle='rgba(124,92,255,.5)'; ctx.lineWidth=2; ctx.strokeRect(12,12,232,64);
+  // 左上：上からスコア → 死亡数（タッチUI時はポーズボタン分だけ右へ寄せる）
+  const ox = touchUI ? 60 : 0;
+  ctx.fillStyle='rgba(20,16,30,.6)'; ctx.fillRect(12+ox,12,232,64);
+  ctx.strokeStyle='rgba(124,92,255,.5)'; ctx.lineWidth=2; ctx.strokeRect(12+ox,12,232,64);
   ctx.textAlign='left';
   ctx.fillStyle='#9b8fb5'; ctx.font='11px DotGothic16,monospace';
-  ctx.fillText('SCORE', 24, 30);
+  ctx.fillText('SCORE', 24+ox, 30);
   ctx.fillStyle= score<0 ? '#ff7089' : '#5bd6a0';
   ctx.font='22px DotGothic16,monospace';
-  ctx.fillText(String(score), 92, 34);
+  ctx.fillText(String(score), 92+ox, 34);
   ctx.fillStyle='#9b8fb5'; ctx.font='11px DotGothic16,monospace';
-  ctx.fillText('DEATHS', 24, 58);
+  ctx.fillText('DEATHS', 24+ox, 58);
   ctx.fillStyle='#f3ead9'; ctx.font='18px DotGothic16,monospace';
-  ctx.fillText(String(deaths.length), 92, 62);
+  ctx.fillText(String(deaths.length), 92+ox, 62);
 
   // 右上：進捗バー
   const prog = Math.max(0,Math.min(1,(player.x-LEVEL.startX)/(LEVEL.goalX-LEVEL.startX)));
@@ -1001,8 +1044,20 @@ function sfxGoal(){  sfxSeq([[392,0.10,'square',0.20],[523,0.10,'square',0.20],
 /* =========================================================================
    ループ & 画面遷移
    ========================================================================= */
-function loop(){
-  if(state===STATE.PLAY && !paused) update();
+// 更新は毎秒60回に固定。描画は画面のリフレッシュレートで滑らかに。
+// これで120Hz等の端末でも“速すぎ”にならず、元の速さ（60fps基準）を保つ。
+const FIXED_STEP = 1000/60;   // 1ステップ=約16.67ms
+let _lastT = 0, _acc = 0;
+function loop(t){
+  if(!_lastT) _lastT = t;
+  let dt = t - _lastT; _lastT = t;
+  if(dt > 250) dt = 250;      // タブ復帰などの大きな飛びを抑制
+  _acc += dt;
+  let steps = 0;
+  while(_acc >= FIXED_STEP && steps < 5){   // 遅い端末では複数回進めて速度を一定に
+    if(state===STATE.PLAY && !paused) update();
+    _acc -= FIXED_STEP; steps++;
+  }
   if(state===STATE.PLAY || state===STATE.CLEAR) draw();
   requestAnimationFrame(loop);
 }
@@ -1036,6 +1091,45 @@ sfxSlider.oninput = ()=>{
   if(BGM.sfx) BGM.sfx.gain.setTargetAtTime(BGM.sfxVol, BGM.ctx.currentTime, 0.02);
 };
 sfxSlider.onchange = ()=> sfxStomp();       // 離したときに試聴
+
+/* =========================================================================
+   タッチ操作UI（スマホ/タブレット）
+   既存の keys / jumpQueued を指で操作するだけ。ゲーム本体は無改造。
+   ========================================================================= */
+const stageEl = document.getElementById('stage');
+function setTouchUI(on){
+  touchUI = on;
+  stageEl.classList.toggle('touch-mode', on);
+  const ts = document.getElementById('touchState');
+  if(ts) ts.textContent = on ? 'ON' : 'OFF';
+}
+// 押している間だけ on()／離したら off() を呼ぶ。指がボタン外に滑っても
+// setPointerCapture で確実に離せる。複数指の同時押しにも対応。
+function bindHold(el, on, off){
+  el.addEventListener('pointerdown', e=>{
+    e.preventDefault();
+    try{ el.setPointerCapture(e.pointerId); }catch(_){}
+    el.classList.add('active'); setTouchUI(true); on();
+  });
+  const release = ()=>{ el.classList.remove('active'); if(off) off(); };
+  el.addEventListener('pointerup', release);
+  el.addEventListener('pointercancel', release);
+}
+bindHold(document.getElementById('btnLeft'),  ()=>keys.left=true,  ()=>keys.left=false);
+bindHold(document.getElementById('btnRight'), ()=>keys.right=true, ()=>keys.right=false);
+bindHold(document.getElementById('btnJump'),  ()=>{ jumpQueued=true; }, null); // 押した瞬間ジャンプ（挙動は据え置き）
+
+const btnPause = document.getElementById('btnPause');
+btnPause.addEventListener('pointerdown', e=>{
+  e.preventDefault(); setTouchUI(true);
+  if(state===STATE.PLAY) togglePause();
+});
+
+// 手動トグル（ポーズ画面）
+document.getElementById('touchToggle').onclick = ()=> setTouchUI(!touchUI);
+
+// 初期表示：タッチできる端末なら最初からボタンを出す
+setTouchUI( window.matchMedia('(pointer: coarse)').matches || ('ontouchstart' in window) );
 
 fullReset();
 requestAnimationFrame(loop);
