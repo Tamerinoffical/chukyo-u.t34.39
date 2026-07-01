@@ -317,7 +317,7 @@ function update(){
   /* --- プレイヤー操作 --- */
   player.vx = (keys.right?RUN:0) - (keys.left?RUN:0);
   if(player.vx>0) player.face=1; else if(player.vx<0) player.face=-1;
-  if(jumpQueued && player.onGround){ player.vy = JUMP_V; }
+  if(jumpQueued && player.onGround){ player.vy = JUMP_V; sfxJump(); }
   jumpQueued = false;
   moveAndCollide(player);
   player.anim += Math.abs(player.vx)*0.2;
@@ -424,7 +424,7 @@ function updateThwomp(e){
   // 接触で死亡（落下/着地中が危険）。上から踏めば倒せる
   if(player.invuln<=0 && aabb(player,e)){
     const stomp = player.vy>0 && (player.y+player.h) < e.y + e.h*0.5;
-    if(stomp && e.state!=='fall'){ e.dead=true; score+=1000; player.vy=JUMP_V*0.62; }
+    if(stomp && e.state!=='fall'){ e.dead=true; score+=1000; sfxStomp(); player.vy=JUMP_V*0.62; }
     else killPlayer();
   }
 }
@@ -499,6 +499,7 @@ function handleStompOrHit(e, stompable){
   if(stompable && stomp){
     e.dead = true;
     score += (e.type==='hammer') ? 1500 : 1000;   // 撃破スコア
+    sfxStomp();
     player.vy = JUMP_V*0.62;       // 踏んだら小さく跳ねる
   }else{
     killPlayer();
@@ -509,6 +510,7 @@ function handleStompOrHit(e, stompable){
 function killPlayer(){
   deaths.push({x:player.x+player.w/2, y:player.y+player.h});
   score -= 5000;
+  sfxDeath();
   deathFlash = 36;
   player.invuln = 1;
 }
@@ -516,6 +518,7 @@ function killPlayer(){
 function goalReached(){
   state = STATE.CLEAR;
   stopBGM();
+  sfxGoal();
   document.getElementById('clearStats').textContent =
     `スコア：${score}　／　死亡回数：${deaths.length}回`;
   show('clearScreen');
@@ -881,7 +884,7 @@ function drawHUD(){
    Aマイナーの暗い16ステップを繰り返す。操作(ボタン)で開始＝自動再生制限に準拠。
    ========================================================================= */
 const BGM = { ctx:null, master:null, on:true, timer:null, step:0, next:0 };
-const STEP_DUR = 0.17;
+const STEP_DUR = 0.13;   // 1ステップの長さ（小さいほど速い）
 const BASS = [110,0,0,110, 82.41,0,82.41,0, 98,0,0,98, 87.31,0,110,0];
 const LEAD = [440,0,523.25,0, 659.25,0,523.25,0, 587.33,0,659.25,0, 523.25,0,493.88,0];
 
@@ -893,6 +896,10 @@ function initAudio(){
   BGM.master = BGM.ctx.createGain();
   BGM.master.gain.value = 0;
   BGM.master.connect(BGM.ctx.destination);
+  // 効果音は独立バス（BGMのフェードに影響されない一定音量）
+  BGM.sfx = BGM.ctx.createGain();
+  BGM.sfx.gain.value = 0.5;
+  BGM.sfx.connect(BGM.ctx.destination);
 }
 function bgmTone(freq,t,dur,type,vol){
   if(!freq) return;
@@ -935,6 +942,31 @@ function startBGM(){
 function stopBGM(){
   if(BGM.ctx && BGM.master) BGM.master.gain.setTargetAtTime(0, BGM.ctx.currentTime, 0.05);
 }
+
+/* ---- 効果音（レトロ風・合成） ----
+   seq: [freq, dur, type, vol, slideTo?] の配列を順番に鳴らす */
+function sfxSeq(seq){
+  if(!BGM.ctx || !BGM.on) return;
+  const c=BGM.ctx; let t=c.currentTime;
+  for(const [f,dur,type,vol,to] of seq){
+    if(f){
+      const o=c.createOscillator(), g=c.createGain();
+      o.type=type||'square'; o.frequency.setValueAtTime(f,t);
+      if(to) o.frequency.exponentialRampToValueAtTime(to,t+dur);
+      g.gain.setValueAtTime(0.0001,t);
+      g.gain.linearRampToValueAtTime(vol,t+0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+      o.connect(g); g.connect(BGM.sfx); o.start(t); o.stop(t+dur+0.02);
+    }
+    t += dur;
+  }
+}
+function sfxJump(){  sfxSeq([[440,0.10,'square',0.16,880]]); }                 // ぴょん（上昇）
+function sfxStomp(){ sfxSeq([[520,0.04,'square',0.22,150],[130,0.07,'square',0.18]]); } // 踏みつぶし
+function sfxDeath(){ sfxSeq([[330,0.11,'square',0.22,300],[247,0.11,'square',0.22],
+                             [196,0.13,'square',0.22],[110,0.30,'square',0.22,70]]); }   // 下降＝死亡
+function sfxGoal(){  sfxSeq([[392,0.10,'square',0.20],[523,0.10,'square',0.20],
+                             [659,0.10,'square',0.20],[784,0.26,'square',0.22]]); }      // 上昇＝クリア
 
 /* =========================================================================
    ループ & 画面遷移
