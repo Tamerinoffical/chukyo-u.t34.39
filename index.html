@@ -63,6 +63,22 @@
   .deaths-line{font-size:clamp(13px,2vw,18px);color:#cdc4dd;}
   .hint{position:absolute;left:14px;bottom:12px;font-size:11px;color:#b9aed0;
     opacity:.8;text-shadow:0 1px 0 #000;line-height:1.6;}
+  /* ---- ポーズ画面：ゲームがうっすら見えるよう軽めの暗幕 ---- */
+  #pauseScreen{background:rgba(13,10,19,.74);}
+  .panel{background:var(--panel);border:2px solid var(--panel-edge);border-radius:14px;
+    padding:26px 30px;display:flex;flex-direction:column;gap:20px;min-width:min(88vw,360px);
+    box-shadow:0 12px 40px rgba(0,0,0,.5);}
+  .slider-row{display:flex;flex-direction:column;gap:8px;text-align:left;}
+  .slider-row label{font-size:14px;color:#cdc4dd;display:flex;justify-content:space-between;}
+  .slider-row label b{color:var(--accent2);font-weight:normal;}
+  input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:8px;
+    border-radius:6px;background:#2a2140;outline:none;cursor:pointer;}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
+    width:20px;height:20px;border-radius:50%;background:var(--accent2);
+    border:2px solid #d7cdf5;box-shadow:0 0 8px rgba(124,92,255,.7);}
+  input[type=range]::-moz-range-thumb{width:20px;height:20px;border:2px solid #d7cdf5;
+    border-radius:50%;background:var(--accent2);box-shadow:0 0 8px rgba(124,92,255,.7);}
+  input[type=range]:focus-visible{outline:3px solid #fff;outline-offset:3px;}
   @media (prefers-reduced-motion: reduce){.overlay.show{animation:none}}
 </style>
 </head>
@@ -104,7 +120,23 @@
       <div class="btns"><button class="game go" id="againBtn">もう一度あそぶ</button></div>
     </div>
 
-    <div class="hint">A/← D/→ で移動・Space でジャンプ／R: やり直す／P: 一時停止／M: 音を消す</div>
+    <!-- ポーズ（音量調整） -->
+    <div id="pauseScreen" class="overlay">
+      <div class="title" style="font-size:clamp(24px,4vw,40px)">PAUSE</div>
+      <div class="panel">
+        <div class="slider-row">
+          <label>BGM <b id="bgmVal">40%</b></label>
+          <input type="range" id="bgmSlider" min="0" max="100" value="40">
+        </div>
+        <div class="slider-row">
+          <label>効果音 <b id="sfxVal">55%</b></label>
+          <input type="range" id="sfxSlider" min="0" max="100" value="55">
+        </div>
+      </div>
+      <div class="btns"><button class="game go" id="resumeBtn">再開（P）</button></div>
+    </div>
+
+    <div class="hint">A/← D/→ で移動・Space でジャンプ／R: やり直す／P: 一時停止・音量／M: 音を消す</div>
   </div>
 </div>
 
@@ -246,13 +278,15 @@ const keys = {left:false, right:false};
 let jumpQueued = false;
 const blockKeys = new Set([' ','arrowleft','arrowright','arrowup','arrowdown','spacebar']);
 addEventListener('keydown', e=>{
+  // スライダー等の入力フォーカス中はゲーム操作を横取りしない
+  if(e.target && e.target.tagName==='INPUT') return;
   const k = e.key.toLowerCase();
   if(blockKeys.has(k)) e.preventDefault();
   if(k==='a'||k==='arrowleft')  keys.left=true;
   if(k==='d'||k==='arrowright') keys.right=true;
   if(k===' '||k==='spacebar'||k==='arrowup'){ if(!e.repeat) jumpQueued=true; }
   if(k==='r'){ if(state===STATE.PLAY) resetRun(); }
-  if(k==='p'){ if(state===STATE.PLAY) paused=!paused; }
+  if(k==='p'){ if(state===STATE.PLAY) togglePause(); }
   if(k==='m'){ BGM.on=!BGM.on; }
 });
 addEventListener('keyup', e=>{
@@ -554,12 +588,6 @@ function draw(){
   if(deathFlash>0){
     ctx.fillStyle=`rgba(255,40,60,${deathFlash/36*0.45})`;
     ctx.fillRect(0,0,W,H);
-  }
-  if(paused){
-    ctx.fillStyle='rgba(13,10,19,.6)'; ctx.fillRect(0,0,W,H);
-    ctx.fillStyle='#f3ead9'; ctx.font='28px DotGothic16,monospace';
-    ctx.textAlign='center'; ctx.fillText('PAUSE（Pで再開）',W/2,H/2);
-    ctx.textAlign='left';
   }
 }
 
@@ -883,7 +911,9 @@ function drawHUD(){
    BGM：Web Audioで合成するレトロ風ダークループ（外部ファイル不要）
    Aマイナーの暗い16ステップを繰り返す。操作(ボタン)で開始＝自動再生制限に準拠。
    ========================================================================= */
-const BGM = { ctx:null, master:null, on:true, timer:null, step:0, next:0 };
+const BGM = { ctx:null, master:null, sfx:null, on:true, timer:null, step:0, next:0,
+              musicVol:0.16, sfxVol:0.5 };
+const MUSIC_MAX = 0.4, SFX_MAX = 0.9;   // スライダー100%のときの上限ゲイン
 const STEP_DUR = 0.13;   // 1ステップの長さ（小さいほど速い）
 const BASS = [110,0,0,110, 82.41,0,82.41,0, 98,0,0,98, 87.31,0,110,0];
 const LEAD = [440,0,523.25,0, 659.25,0,523.25,0, 587.33,0,659.25,0, 523.25,0,493.88,0];
@@ -898,7 +928,7 @@ function initAudio(){
   BGM.master.connect(BGM.ctx.destination);
   // 効果音は独立バス（BGMのフェードに影響されない一定音量）
   BGM.sfx = BGM.ctx.createGain();
-  BGM.sfx.gain.value = 0.5;
+  BGM.sfx.gain.value = BGM.sfxVol;
   BGM.sfx.connect(BGM.ctx.destination);
 }
 function bgmTone(freq,t,dur,type,vol){
@@ -925,8 +955,8 @@ function bgmStep(i,t){
 }
 function bgmScheduler(){
   const c=BGM.ctx; if(!c) return;
-  const playing = (state===STATE.PLAY && !paused && BGM.on);
-  BGM.master.gain.setTargetAtTime(playing?0.16:0, c.currentTime, 0.05);
+  const playing = (state===STATE.PLAY && BGM.on);   // ポーズ中も鳴らして音量確認できる
+  BGM.master.gain.setTargetAtTime(playing?BGM.musicVol:0, c.currentTime, 0.05);
   while(BGM.next < c.currentTime + 0.12){
     if(playing) bgmStep(BGM.step, BGM.next);
     BGM.next += STEP_DUR;
@@ -983,10 +1013,29 @@ function show(id){
 }
 function startGame(){ fullReset(); state=STATE.PLAY; paused=false; show(null); startBGM(); }
 
+function togglePause(){ paused ? resumeGame() : pauseGame(); }
+function pauseGame(){ paused=true; show('pauseScreen'); }
+function resumeGame(){ paused=false; show(null); }
+
 document.getElementById('startBtn').onclick   = startGame;
 document.getElementById('restartBtn').onclick = startGame;
 document.getElementById('againBtn').onclick   = startGame;
 document.getElementById('quitBtn').onclick    = ()=>{ state=STATE.END; show('endScreen'); };
+document.getElementById('resumeBtn').onclick  = resumeGame;
+
+// ---- 音量スライダー ----
+const bgmSlider=document.getElementById('bgmSlider'), bgmVal=document.getElementById('bgmVal');
+const sfxSlider=document.getElementById('sfxSlider'), sfxVal=document.getElementById('sfxVal');
+bgmSlider.oninput = ()=>{
+  const p=+bgmSlider.value; bgmVal.textContent=p+'%';
+  BGM.musicVol = p/100*MUSIC_MAX;          // スケジューラが即座に反映
+};
+sfxSlider.oninput = ()=>{
+  const p=+sfxSlider.value; sfxVal.textContent=p+'%';
+  BGM.sfxVol = p/100*SFX_MAX;
+  if(BGM.sfx) BGM.sfx.gain.setTargetAtTime(BGM.sfxVol, BGM.ctx.currentTime, 0.02);
+};
+sfxSlider.onchange = ()=> sfxStomp();       // 離したときに試聴
 
 fullReset();
 requestAnimationFrame(loop);
